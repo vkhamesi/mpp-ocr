@@ -1,0 +1,38 @@
+image: docker:git
+
+stages:
+  - build-docker-images
+  - deploy
+
+variables:
+  CONTAINER_RELEASE_IMAGE: $CI_REGISTRY/mppteam/mpp-ocr
+  DOCKER_DRIVER: overlay2
+
+build-master-uwsgi-image:
+  stage: build-docker-images
+  script:
+    - env
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker build --cache-from $CONTAINER_RELEASE_IMAGE:latest -t $CONTAINER_RELEASE_IMAGE:latest -t $CONTAINER_RELEASE_IMAGE:$CI_COMMIT_SHORT_SHA -f $CI_PROJECT_DIR/Dockerfile $CI_PROJECT_DIR
+    - docker push $CONTAINER_RELEASE_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $CONTAINER_RELEASE_IMAGE:latest
+  only:
+    - main
+    - web
+
+deploy-master-uwsgi-image:
+  stage: deploy
+  needs:
+    - job: build-master-uwsgi-image
+      artifacts: false
+  script:
+    - apk update  && apk add --no-cache curl
+    - curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+    - chmod +x ./kubectl && mv ./kubectl /usr/local/bin/kubectl
+    - mkdir -p $HOME/.kube
+    - echo -n $DEV_KUBE_CONFIG | base64 -d > $HOME/.kube/config
+    - kubectl set image deployment/mpp-ocr mpp-ocr=$CONTAINER_RELEASE_IMAGE:$CI_COMMIT_SHORT_SHA --record
+    - kubectl rollout status -w deployment/mpp-ocr --timeout=300s || (kubectl rollout undo deployment/mpp-ocr && exit 1)
+  only:
+    - main
+    - web
